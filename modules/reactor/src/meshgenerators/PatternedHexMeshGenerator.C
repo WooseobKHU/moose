@@ -392,6 +392,10 @@ PatternedHexMeshGenerator::generate()
                    _name,
                    ": num_sectors_per_side metadata values of all six sides of each input mesh "
                    "generator must be identical.");
+      if (num_sectors_per_side_array_tmp.front() == 1 && _pattern_boundary == "hexagon")
+        paramError(
+            "inputs",
+            "for each input mesh, the number of sectors on each side must be greater than unity.");
       num_sectors_per_side_array.push_back(*num_sectors_per_side_array_tmp.begin());
       background_intervals_array.push_back(
           getMeshProperty<unsigned int>("background_intervals_meta", _input_names[i]));
@@ -848,6 +852,7 @@ PatternedHexMeshGenerator::generate()
     new_nodeset_map.insert(input_nodeset_map.begin(), input_nodeset_map.end());
   }
 
+  out_mesh->set_isnt_prepared();
   auto mesh = dynamic_pointer_cast<MeshBase>(out_mesh);
   // before return, add reporting IDs if _use_reporting_id is set true
   if (_use_reporting_id)

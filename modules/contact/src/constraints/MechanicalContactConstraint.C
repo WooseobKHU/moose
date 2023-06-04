@@ -17,6 +17,7 @@
 #include "SystemBase.h"
 #include "Assembly.h"
 #include "MooseMesh.h"
+#include "MathUtils.h"
 #include "AugmentedLagrangianContactProblem.h"
 #include "Executioner.h"
 #include "AddVariableAction.h"
@@ -27,6 +28,8 @@
 #include "libmesh/sparse_matrix.h"
 
 registerMooseObject("ContactApp", MechanicalContactConstraint);
+
+const unsigned int MechanicalContactConstraint::_no_iterations = 0;
 
 InputParameters
 MechanicalContactConstraint::validParams()
@@ -55,6 +58,10 @@ MechanicalContactConstraint::validParams()
       "penalty",
       1e8,
       "The penalty to apply.  This can vary depending on the stiffness of your materials");
+  params.addParam<Real>("penalty_multiplier",
+                        1.0,
+                        "The growth factor for the penalty applied at the end of each augmented "
+                        "Lagrange update iteration");
   params.addParam<Real>("friction_coefficient", 0, "The friction coefficient");
   params.addParam<Real>("tangential_tolerance",
                         "Tangential distance to extend edges of contact surfaces");
@@ -121,6 +128,7 @@ MechanicalContactConstraint::MechanicalContactConstraint(const InputParameters &
     _formulation(getParam<MooseEnum>("formulation").getEnum<ContactFormulation>()),
     _normalize_penalty(getParam<bool>("normalize_penalty")),
     _penalty(getParam<Real>("penalty")),
+    _penalty_multiplier(getParam<Real>("penalty_multiplier")),
     _friction_coefficient(getParam<Real>("friction_coefficient")),
     _tension_release(getParam<Real>("tension_release")),
     _capture_tolerance(getParam<Real>("capture_tolerance")),
@@ -144,7 +152,11 @@ MechanicalContactConstraint::MechanicalContactConstraint(const InputParameters &
     _connected_secondary_nodes_jacobian(getParam<bool>("connected_secondary_nodes_jacobian")),
     _non_displacement_vars_jacobian(getParam<bool>("non_displacement_variables_jacobian")),
     _contact_linesearch(dynamic_cast<ContactLineSearchBase *>(_subproblem.getLineSearch())),
-    _print_contact_nodes(getParam<bool>("print_contact_nodes"))
+    _print_contact_nodes(getParam<bool>("print_contact_nodes")),
+    _augmented_lagrange_problem(dynamic_cast<AugmentedLagrangianContactProblem *>(&_fe_problem)),
+    _lagrangian_iteration_number(_augmented_lagrange_problem
+                                     ? _augmented_lagrange_problem->getLagrangianIterationNumber()
+                                     : _no_iterations)
 {
   _overwrite_secondary_residual = false;
 
@@ -185,8 +197,7 @@ MechanicalContactConstraint::MechanicalContactConstraint(const InputParameters &
     if (_model == ContactModel::GLUED)
       mooseError("The Augmented Lagrangian contact formulation does not support GLUED case.");
 
-    FEProblemBase * fe_problem = getParam<FEProblemBase *>("_fe_problem_base");
-    if (dynamic_cast<AugmentedLagrangianContactProblem *>(fe_problem) == NULL)
+    if (!_augmented_lagrange_problem)
       mooseError("The Augmented Lagrangian contact formulation must use "
                  "AugmentedLagrangianContactProblem.");
 
@@ -218,9 +229,9 @@ MechanicalContactConstraint::timestepSetup()
 {
   if (_component == 0)
   {
-    updateContactStatefulData(true);
+    updateContactStatefulData(/* beginning_of_step = */ true);
     if (_formulation == ContactFormulation::AUGMENTED_LAGRANGE)
-      updateAugmentedLagrangianMultiplier(true);
+      updateAugmentedLagrangianMultiplier(/* beginning_of_step = */ true);
 
     _update_stateful_data = false;
 
@@ -235,7 +246,7 @@ MechanicalContactConstraint::jacobianSetup()
   if (_component == 0)
   {
     if (_update_stateful_data)
-      updateContactStatefulData();
+      updateContactStatefulData(/* beginning_of_step = */ false);
     _update_stateful_data = true;
   }
 }
@@ -1716,8 +1727,7 @@ MechanicalContactConstraint::getPenalty(PenetrationInfo & pinfo)
   Real penalty = _penalty;
   if (_normalize_penalty)
     penalty *= nodalArea(pinfo);
-
-  return penalty;
+  return penalty * MathUtils::pow(_penalty_multiplier, _lagrangian_iteration_number);
 }
 
 Real
@@ -1727,7 +1737,7 @@ MechanicalContactConstraint::getTangentialPenalty(PenetrationInfo & pinfo)
   if (_normalize_penalty)
     penalty *= nodalArea(pinfo);
 
-  return penalty;
+  return penalty * MathUtils::pow(_penalty_multiplier, _lagrangian_iteration_number);
 }
 
 void
@@ -1735,8 +1745,8 @@ MechanicalContactConstraint::computeJacobian()
 {
   getConnectedDofIndices(_var.number());
 
-  DenseMatrix<Number> & Knn = _assembly.jacobianBlockNeighbor(
-      Moose::NeighborNeighbor, _primary_var.number(), _var.number());
+  prepareMatrixTagNeighbor(
+      _assembly, _primary_var.number(), _var.number(), Moose::NeighborNeighbor, _Knn);
 
   _Kee.resize(_test_secondary.size(), _connected_dof_indices.size());
 
@@ -1747,12 +1757,15 @@ MechanicalContactConstraint::computeJacobian()
 
   if (_primary_secondary_jacobian)
   {
-    DenseMatrix<Number> & Ken =
-        _assembly.jacobianBlockNeighbor(Moose::ElementNeighbor, _var.number(), _var.number());
-    if (Ken.m() && Ken.n())
+    prepareMatrixTagNeighbor(_assembly, _var.number(), _var.number(), Moose::ElementNeighbor, _Ken);
+    if (_Ken.m() && _Ken.n())
+    {
       for (_i = 0; _i < _test_secondary.size(); _i++)
         for (_j = 0; _j < _phi_primary.size(); _j++)
-          Ken(_i, _j) += computeQpJacobian(Moose::SecondaryPrimary);
+          _Ken(_i, _j) += computeQpJacobian(Moose::SecondaryPrimary);
+      accumulateTaggedLocalMatrix(
+          _assembly, _var.number(), _var.number(), Moose::ElementNeighbor, _Ken);
+    }
 
     _Kne.resize(_test_primary.size(), _connected_dof_indices.size());
     for (_i = 0; _i < _test_primary.size(); _i++)
@@ -1761,10 +1774,14 @@ MechanicalContactConstraint::computeJacobian()
         _Kne(_i, _j) += computeQpJacobian(Moose::PrimarySecondary);
   }
 
-  if (Knn.m() && Knn.n())
+  if (_Knn.m() && _Knn.n())
+  {
     for (_i = 0; _i < _test_primary.size(); _i++)
       for (_j = 0; _j < _phi_primary.size(); _j++)
-        Knn(_i, _j) += computeQpJacobian(Moose::PrimaryPrimary);
+        _Knn(_i, _j) += computeQpJacobian(Moose::PrimaryPrimary);
+    accumulateTaggedLocalMatrix(
+        _assembly, _primary_var.number(), _var.number(), Moose::NeighborNeighbor, _Knn);
+  }
 }
 
 void
@@ -1774,8 +1791,8 @@ MechanicalContactConstraint::computeOffDiagJacobian(const unsigned int jvar_num)
 
   _Kee.resize(_test_secondary.size(), _connected_dof_indices.size());
 
-  DenseMatrix<Number> & Knn =
-      _assembly.jacobianBlockNeighbor(Moose::NeighborNeighbor, _primary_var.number(), jvar_num);
+  prepareMatrixTagNeighbor(
+      _assembly, _primary_var.number(), jvar_num, Moose::NeighborNeighbor, _Knn);
 
   for (_i = 0; _i < _test_secondary.size(); _i++)
     // Loop over the connected dof indices so we can get all the jacobian contributions
@@ -1784,11 +1801,11 @@ MechanicalContactConstraint::computeOffDiagJacobian(const unsigned int jvar_num)
 
   if (_primary_secondary_jacobian)
   {
-    DenseMatrix<Number> & Ken =
-        _assembly.jacobianBlockNeighbor(Moose::ElementNeighbor, _var.number(), jvar_num);
+    prepareMatrixTagNeighbor(_assembly, _var.number(), jvar_num, Moose::ElementNeighbor, _Ken);
     for (_i = 0; _i < _test_secondary.size(); _i++)
       for (_j = 0; _j < _phi_primary.size(); _j++)
-        Ken(_i, _j) += computeQpOffDiagJacobian(Moose::SecondaryPrimary, jvar_num);
+        _Ken(_i, _j) += computeQpOffDiagJacobian(Moose::SecondaryPrimary, jvar_num);
+    accumulateTaggedLocalMatrix(_assembly, _var.number(), jvar_num, Moose::ElementNeighbor, _Ken);
 
     _Kne.resize(_test_primary.size(), _connected_dof_indices.size());
     if (_Kne.m() && _Kne.n())
@@ -1800,7 +1817,9 @@ MechanicalContactConstraint::computeOffDiagJacobian(const unsigned int jvar_num)
 
   for (_i = 0; _i < _test_primary.size(); _i++)
     for (_j = 0; _j < _phi_primary.size(); _j++)
-      Knn(_i, _j) += computeQpOffDiagJacobian(Moose::PrimaryPrimary, jvar_num);
+      _Knn(_i, _j) += computeQpOffDiagJacobian(Moose::PrimaryPrimary, jvar_num);
+  accumulateTaggedLocalMatrix(
+      _assembly, _primary_var.number(), jvar_num, Moose::NeighborNeighbor, _Knn);
 }
 
 void

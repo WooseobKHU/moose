@@ -70,6 +70,7 @@ class ElementUserObject;
 class InternalSideUserObject;
 class InterfaceUserObject;
 class GeneralUserObject;
+class Positions;
 class Function;
 class Distribution;
 class Sampler;
@@ -936,6 +937,13 @@ public:
   const UserObject & getUserObjectBase(const std::string & name, const THREAD_ID tid = 0) const;
 
   /**
+   * Get the Positions object by its name
+   * @param name The name of the Positions object being retrieved
+   * @return Const reference to the Positions object
+   */
+  const Positions & getPositionsObject(const std::string & name) const;
+
+  /**
    * Check if there if a user object of given name
    * @param name The name of the user object being checked for
    * @return true if the user object exists, false otherwise
@@ -1339,12 +1347,6 @@ public:
   virtual void addJacobianNeighbor(THREAD_ID tid) override;
   virtual void addJacobianNeighborLowerD(THREAD_ID tid) override;
   virtual void addJacobianLowerD(THREAD_ID tid) override;
-  virtual void addJacobianBlock(SparseMatrix<Number> & jacobian,
-                                unsigned int ivar,
-                                unsigned int jvar,
-                                const DofMap & dof_map,
-                                std::vector<dof_id_type> & dof_indices,
-                                THREAD_ID tid) override;
   virtual void addJacobianBlockTags(SparseMatrix<Number> & jacobian,
                                     unsigned int ivar,
                                     unsigned int jvar,
@@ -1358,6 +1360,7 @@ public:
                                    const DofMap & dof_map,
                                    std::vector<dof_id_type> & dof_indices,
                                    std::vector<dof_id_type> & neighbor_dof_indices,
+                                   const std::set<TagID> & tags,
                                    THREAD_ID tid) override;
   virtual void addJacobianScalar(THREAD_ID tid = 0);
   virtual void addJacobianOffDiagScalar(unsigned int ivar, THREAD_ID tid = 0);
@@ -1365,10 +1368,6 @@ public:
   virtual void cacheJacobian(THREAD_ID tid) override;
   virtual void cacheJacobianNeighbor(THREAD_ID tid) override;
   virtual void addCachedJacobian(THREAD_ID tid) override;
-  /**
-   * Deprecated method. Use addCachedJacobian
-   */
-  virtual void addCachedJacobianContributions(THREAD_ID tid) override;
 
   virtual void prepareShapes(unsigned int var, THREAD_ID tid) override;
   virtual void prepareFaceShapes(unsigned int var, THREAD_ID tid) override;
@@ -2040,9 +2039,17 @@ public:
   unsigned int nlSysNum(const NonlinearSystemName & nl_sys_name) const;
 
   /**
+   * Whether it will skip further residual evaluations and fail the next nonlinear convergence check
+   */
+  bool getFailNextNonlinearConvergenceCheck() const
+  {
+    return _fail_next_nonlinear_convergence_check;
+  }
+
+  /**
    * Skip further residual evaluations and fail the next nonlinear convergence check
    */
-  bool failNextNonlinearConvergenceCheck() const { return _fail_next_nonlinear_convergence_check; }
+  void setFailNextNonlinearConvergenceCheck() { _fail_next_nonlinear_convergence_check = true; }
 
   /*
    * Set the status of loop order of execution printing
@@ -2061,6 +2068,30 @@ public:
   void reinitMortarUserObjects(BoundaryID primary_boundary_id,
                                BoundaryID secondary_boundary_id,
                                bool displaced);
+
+  virtual const std::vector<VectorTag> & currentResidualVectorTags() const override;
+
+  /**
+   * Class that is used as a parameter to set/clearCurrentResidualVectorTags that allows only
+   * blessed classes to call said methods
+   */
+  class CurrentResidualVectorTagsKey
+  {
+    friend class CrankNicolson;
+    friend class FEProblemBase;
+    CurrentResidualVectorTagsKey() {}
+    CurrentResidualVectorTagsKey(const CurrentResidualVectorTagsKey &) {}
+  };
+
+  /**
+   * Set the current residual vector tag data structure based on the passed in tag IDs
+   */
+  void setCurrentResidualVectorTags(const std::set<TagID> & vector_tags);
+
+  /**
+   * Clear the current residual vector tag data structure
+   */
+  void clearCurrentResidualVectorTags();
 
 protected:
   /// Create extra tagged vectors and matrices
@@ -2472,10 +2503,6 @@ private:
   /// Number of steps in a grid sequence
   unsigned int _num_grid_steps;
 
-  /// MooseEnum describing how to obtain reference points for displaced mesh dgkernels and/or
-  /// interface kernels. Options are invert_elem_phys, use_undisplaced_ref, and the default unset.
-  MooseEnum _displaced_neighbor_ref_pts;
-
   /// Whether to trust the user coupling matrix no matter what. See
   /// https://github.com/idaholab/moose/issues/16395 for detailed background
   bool _trust_user_coupling_matrix = false;
@@ -2491,6 +2518,11 @@ private:
 
   /// When to print the execution of loops
   ExecFlagEnum _print_execution_on;
+
+  /// A data member to store the residual vector tag(s) passed into \p computeResidualTag(s). This
+  /// data member will be used when APIs like \p cacheResidual, \p addCachedResiduals, etc. are
+  /// called
+  std::vector<VectorTag> _current_residual_vector_tags;
 };
 
 using FVProblemBase = FEProblemBase;
@@ -2634,4 +2666,22 @@ FEProblemBase::fvBCsIntegrityCheck(const bool fv_bcs_integrity_check)
     return;
 
   _fv_bcs_integrity_check = fv_bcs_integrity_check;
+}
+
+inline const std::vector<VectorTag> &
+FEProblemBase::currentResidualVectorTags() const
+{
+  return _current_residual_vector_tags;
+}
+
+inline void
+FEProblemBase::setCurrentResidualVectorTags(const std::set<TagID> & vector_tags)
+{
+  _current_residual_vector_tags = getVectorTags(vector_tags);
+}
+
+inline void
+FEProblemBase::clearCurrentResidualVectorTags()
+{
+  _current_residual_vector_tags.clear();
 }

@@ -57,6 +57,7 @@
 #include "SideVectorPostprocessor.h"
 #include "InternalSideVectorPostprocessor.h"
 #include "GeneralVectorPostprocessor.h"
+#include "Positions.h"
 #include "Indicator.h"
 #include "Marker.h"
 #include "MultiApp.h"
@@ -391,7 +392,6 @@ FEProblemBase::FEProblemBase(const InputParameters & parameters)
     _u_dotdot_old_requested(false),
     _has_mortar(false),
     _num_grid_steps(0),
-    _displaced_neighbor_ref_pts("invert_elem_phys use_undisplaced_ref unset", "unset"),
     _print_execution_on()
 {
   //  Initialize static do_derivatives member. We initialize this to true so that all the default AD
@@ -1599,7 +1599,8 @@ FEProblemBase::prepareAssembly(THREAD_ID tid)
 void
 FEProblemBase::addResidual(THREAD_ID tid)
 {
-  _assembly[tid][_current_nl_sys->number()]->addResidual(getVectorTags(Moose::VECTOR_TAG_RESIDUAL));
+  _assembly[tid][_current_nl_sys->number()]->addResidual(Assembly::GlobalDataKey{},
+                                                         currentResidualVectorTags());
 
   if (_displaced_problem)
     _displaced_problem->addResidual(tid);
@@ -1608,8 +1609,8 @@ FEProblemBase::addResidual(THREAD_ID tid)
 void
 FEProblemBase::addResidualNeighbor(THREAD_ID tid)
 {
-  _assembly[tid][_current_nl_sys->number()]->addResidualNeighbor(
-      getVectorTags(Moose::VECTOR_TAG_RESIDUAL));
+  _assembly[tid][_current_nl_sys->number()]->addResidualNeighbor(Assembly::GlobalDataKey{},
+                                                                 currentResidualVectorTags());
 
   if (_displaced_problem)
     _displaced_problem->addResidualNeighbor(tid);
@@ -1618,8 +1619,8 @@ FEProblemBase::addResidualNeighbor(THREAD_ID tid)
 void
 FEProblemBase::addResidualLower(THREAD_ID tid)
 {
-  _assembly[tid][_current_nl_sys->number()]->addResidualLower(
-      getVectorTags(Moose::VECTOR_TAG_RESIDUAL));
+  _assembly[tid][_current_nl_sys->number()]->addResidualLower(Assembly::GlobalDataKey{},
+                                                              currentResidualVectorTags());
 
   if (_displaced_problem)
     _displaced_problem->addResidualLower(tid);
@@ -1628,14 +1629,15 @@ FEProblemBase::addResidualLower(THREAD_ID tid)
 void
 FEProblemBase::addResidualScalar(THREAD_ID tid /* = 0*/)
 {
-  _assembly[tid][_current_nl_sys->number()]->addResidualScalar(
-      getVectorTags(Moose::VECTOR_TAG_RESIDUAL));
+  _assembly[tid][_current_nl_sys->number()]->addResidualScalar(Assembly::GlobalDataKey{},
+                                                               currentResidualVectorTags());
 }
 
 void
 FEProblemBase::cacheResidual(THREAD_ID tid)
 {
-  _assembly[tid][_current_nl_sys->number()]->cacheResidual();
+  _assembly[tid][_current_nl_sys->number()]->cacheResidual(Assembly::GlobalDataKey{},
+                                                           currentResidualVectorTags());
   if (_displaced_problem)
     _displaced_problem->cacheResidual(tid);
 }
@@ -1643,7 +1645,8 @@ FEProblemBase::cacheResidual(THREAD_ID tid)
 void
 FEProblemBase::cacheResidualNeighbor(THREAD_ID tid)
 {
-  _assembly[tid][_current_nl_sys->number()]->cacheResidualNeighbor();
+  _assembly[tid][_current_nl_sys->number()]->cacheResidualNeighbor(Assembly::GlobalDataKey{},
+                                                                   currentResidualVectorTags());
   if (_displaced_problem)
     _displaced_problem->cacheResidualNeighbor(tid);
 }
@@ -1651,7 +1654,8 @@ FEProblemBase::cacheResidualNeighbor(THREAD_ID tid)
 void
 FEProblemBase::addCachedResidual(THREAD_ID tid)
 {
-  _assembly[tid][_current_nl_sys->number()]->addCachedResiduals();
+  _assembly[tid][_current_nl_sys->number()]->addCachedResiduals(Assembly::GlobalDataKey{},
+                                                                currentResidualVectorTags());
 
   if (_displaced_problem)
     _displaced_problem->addCachedResidual(tid);
@@ -1662,15 +1666,15 @@ FEProblemBase::addCachedResidualDirectly(NumericVector<Number> & residual, THREA
 {
   if (_current_nl_sys->hasVector(_current_nl_sys->timeVectorTag()))
     _assembly[tid][_current_nl_sys->number()]->addCachedResidualDirectly(
-        residual, getVectorTag(_current_nl_sys->timeVectorTag()));
+        residual, Assembly::GlobalDataKey{}, getVectorTag(_current_nl_sys->timeVectorTag()));
 
   if (_current_nl_sys->hasVector(_current_nl_sys->nonTimeVectorTag()))
     _assembly[tid][_current_nl_sys->number()]->addCachedResidualDirectly(
-        residual, getVectorTag(_current_nl_sys->nonTimeVectorTag()));
+        residual, Assembly::GlobalDataKey{}, getVectorTag(_current_nl_sys->nonTimeVectorTag()));
 
   // We do this because by adding the cached residual directly, we cannot ensure that all of the
   // cached residuals are emptied after only the two add calls above
-  _assembly[tid][_current_nl_sys->number()]->clearCachedResiduals();
+  _assembly[tid][_current_nl_sys->number()]->clearCachedResiduals(Assembly::GlobalDataKey{});
 
   if (_displaced_problem)
     _displaced_problem->addCachedResidualDirectly(residual, tid);
@@ -1680,7 +1684,9 @@ void
 FEProblemBase::setResidual(NumericVector<Number> & residual, THREAD_ID tid)
 {
   _assembly[tid][_current_nl_sys->number()]->setResidual(
-      residual, getVectorTag(_nl[_current_nl_sys->number()]->residualVectorTag()));
+      residual,
+      Assembly::GlobalDataKey{},
+      getVectorTag(_nl[_current_nl_sys->number()]->residualVectorTag()));
   if (_displaced_problem)
     _displaced_problem->setResidual(residual, tid);
 }
@@ -1689,7 +1695,7 @@ void
 FEProblemBase::setResidualNeighbor(NumericVector<Number> & residual, THREAD_ID tid)
 {
   _assembly[tid][_current_nl_sys->number()]->setResidualNeighbor(
-      residual, getVectorTag(_current_nl_sys->residualVectorTag()));
+      residual, Assembly::GlobalDataKey{}, getVectorTag(_current_nl_sys->residualVectorTag()));
   if (_displaced_problem)
     _displaced_problem->setResidualNeighbor(residual, tid);
 }
@@ -1697,9 +1703,9 @@ FEProblemBase::setResidualNeighbor(NumericVector<Number> & residual, THREAD_ID t
 void
 FEProblemBase::addJacobian(THREAD_ID tid)
 {
-  _assembly[tid][_current_nl_sys->number()]->addJacobian();
+  _assembly[tid][_current_nl_sys->number()]->addJacobian(Assembly::GlobalDataKey{});
   if (_has_nonlocal_coupling)
-    _assembly[tid][_current_nl_sys->number()]->addJacobianNonlocal();
+    _assembly[tid][_current_nl_sys->number()]->addJacobianNonlocal(Assembly::GlobalDataKey{});
   if (_displaced_problem)
   {
     _displaced_problem->addJacobian(tid);
@@ -1711,7 +1717,7 @@ FEProblemBase::addJacobian(THREAD_ID tid)
 void
 FEProblemBase::addJacobianNeighbor(THREAD_ID tid)
 {
-  _assembly[tid][_current_nl_sys->number()]->addJacobianNeighbor();
+  _assembly[tid][_current_nl_sys->number()]->addJacobianNeighbor(Assembly::GlobalDataKey{});
   if (_displaced_problem)
     _displaced_problem->addJacobianNeighbor(tid);
 }
@@ -1719,7 +1725,7 @@ FEProblemBase::addJacobianNeighbor(THREAD_ID tid)
 void
 FEProblemBase::addJacobianNeighborLowerD(THREAD_ID tid)
 {
-  _assembly[tid][_current_nl_sys->number()]->addJacobianNeighborLowerD();
+  _assembly[tid][_current_nl_sys->number()]->addJacobianNeighborLowerD(Assembly::GlobalDataKey{});
   if (_displaced_problem)
     _displaced_problem->addJacobianNeighborLowerD(tid);
 }
@@ -1727,7 +1733,7 @@ FEProblemBase::addJacobianNeighborLowerD(THREAD_ID tid)
 void
 FEProblemBase::addJacobianLowerD(THREAD_ID tid)
 {
-  _assembly[tid][_current_nl_sys->number()]->addJacobianLowerD();
+  _assembly[tid][_current_nl_sys->number()]->addJacobianLowerD(Assembly::GlobalDataKey{});
   if (_displaced_problem)
     _displaced_problem->addJacobianLowerD(tid);
 }
@@ -1735,21 +1741,22 @@ FEProblemBase::addJacobianLowerD(THREAD_ID tid)
 void
 FEProblemBase::addJacobianScalar(THREAD_ID tid /* = 0*/)
 {
-  _assembly[tid][_current_nl_sys->number()]->addJacobianScalar();
+  _assembly[tid][_current_nl_sys->number()]->addJacobianScalar(Assembly::GlobalDataKey{});
 }
 
 void
 FEProblemBase::addJacobianOffDiagScalar(unsigned int ivar, THREAD_ID tid /* = 0*/)
 {
-  _assembly[tid][_current_nl_sys->number()]->addJacobianOffDiagScalar(ivar);
+  _assembly[tid][_current_nl_sys->number()]->addJacobianOffDiagScalar(ivar,
+                                                                      Assembly::GlobalDataKey{});
 }
 
 void
 FEProblemBase::cacheJacobian(THREAD_ID tid)
 {
-  _assembly[tid][_current_nl_sys->number()]->cacheJacobian();
+  _assembly[tid][_current_nl_sys->number()]->cacheJacobian(Assembly::GlobalDataKey{});
   if (_has_nonlocal_coupling)
-    _assembly[tid][_current_nl_sys->number()]->cacheJacobianNonlocal();
+    _assembly[tid][_current_nl_sys->number()]->cacheJacobianNonlocal(Assembly::GlobalDataKey{});
   if (_displaced_problem)
   {
     _displaced_problem->cacheJacobian(tid);
@@ -1761,7 +1768,7 @@ FEProblemBase::cacheJacobian(THREAD_ID tid)
 void
 FEProblemBase::cacheJacobianNeighbor(THREAD_ID tid)
 {
-  _assembly[tid][_current_nl_sys->number()]->cacheJacobianNeighbor();
+  _assembly[tid][_current_nl_sys->number()]->cacheJacobianNeighbor(Assembly::GlobalDataKey{});
   if (_displaced_problem)
     _displaced_problem->cacheJacobianNeighbor(tid);
 }
@@ -1769,48 +1776,9 @@ FEProblemBase::cacheJacobianNeighbor(THREAD_ID tid)
 void
 FEProblemBase::addCachedJacobian(THREAD_ID tid)
 {
-  _assembly[tid][_current_nl_sys->number()]->addCachedJacobian();
+  _assembly[tid][_current_nl_sys->number()]->addCachedJacobian(Assembly::GlobalDataKey{});
   if (_displaced_problem)
     _displaced_problem->addCachedJacobian(tid);
-}
-
-void
-FEProblemBase::addCachedJacobianContributions(THREAD_ID tid)
-{
-  mooseDeprecated("please use addCachedJacobian");
-
-  addCachedJacobian(tid);
-}
-
-void
-FEProblemBase::addJacobianBlock(SparseMatrix<Number> & jacobian,
-                                unsigned int ivar,
-                                unsigned int jvar,
-                                const DofMap & dof_map,
-                                std::vector<dof_id_type> & dof_indices,
-                                THREAD_ID tid)
-{
-  _assembly[tid][_current_nl_sys->number()]->addJacobianBlock(
-      jacobian, ivar, jvar, dof_map, dof_indices);
-  if (_has_nonlocal_coupling)
-    if (_nonlocal_cm[_current_nl_sys->number()](ivar, jvar) != 0)
-    {
-      MooseVariableFEBase & jv = _current_nl_sys->getVariable(tid, jvar);
-      _assembly[tid][_current_nl_sys->number()]->addJacobianBlockNonlocal(
-          jacobian, ivar, jvar, dof_map, dof_indices, jv.allDofIndices());
-    }
-
-  if (_displaced_problem)
-  {
-    _displaced_problem->addJacobianBlock(jacobian, ivar, jvar, dof_map, dof_indices, tid);
-    if (_has_nonlocal_coupling)
-      if (_nonlocal_cm[_current_nl_sys->number()](ivar, jvar) != 0)
-      {
-        MooseVariableFEBase & jv = _current_nl_sys->getVariable(tid, jvar);
-        _displaced_problem->addJacobianBlockNonlocal(
-            jacobian, ivar, jvar, dof_map, dof_indices, jv.allDofIndices(), tid);
-      }
-  }
 }
 
 void
@@ -1823,14 +1791,21 @@ FEProblemBase::addJacobianBlockTags(SparseMatrix<Number> & jacobian,
                                     THREAD_ID tid)
 {
   _assembly[tid][_current_nl_sys->number()]->addJacobianBlockTags(
-      jacobian, ivar, jvar, dof_map, dof_indices, tags);
+      jacobian, ivar, jvar, dof_map, dof_indices, Assembly::GlobalDataKey{}, tags);
 
   if (_has_nonlocal_coupling)
     if (_nonlocal_cm[_current_nl_sys->number()](ivar, jvar) != 0)
     {
       MooseVariableFEBase & jv = _current_nl_sys->getVariable(tid, jvar);
-      _assembly[tid][_current_nl_sys->number()]->addJacobianBlockNonlocal(
-          jacobian, ivar, jvar, dof_map, dof_indices, jv.allDofIndices());
+      _assembly[tid][_current_nl_sys->number()]->addJacobianBlockNonlocalTags(
+          jacobian,
+          ivar,
+          jvar,
+          dof_map,
+          dof_indices,
+          jv.allDofIndices(),
+          Assembly::GlobalDataKey{},
+          tags);
     }
 
   if (_displaced_problem)
@@ -1841,7 +1816,7 @@ FEProblemBase::addJacobianBlockTags(SparseMatrix<Number> & jacobian,
       {
         MooseVariableFEBase & jv = _current_nl_sys->getVariable(tid, jvar);
         _displaced_problem->addJacobianBlockNonlocal(
-            jacobian, ivar, jvar, dof_map, dof_indices, jv.allDofIndices(), tid);
+            jacobian, ivar, jvar, dof_map, dof_indices, jv.allDofIndices(), tags, tid);
       }
   }
 }
@@ -1853,13 +1828,20 @@ FEProblemBase::addJacobianNeighbor(SparseMatrix<Number> & jacobian,
                                    const DofMap & dof_map,
                                    std::vector<dof_id_type> & dof_indices,
                                    std::vector<dof_id_type> & neighbor_dof_indices,
+                                   const std::set<TagID> & tags,
                                    THREAD_ID tid)
 {
-  _assembly[tid][_current_nl_sys->number()]->addJacobianNeighbor(
-      jacobian, ivar, jvar, dof_map, dof_indices, neighbor_dof_indices);
+  _assembly[tid][_current_nl_sys->number()]->addJacobianNeighborTags(jacobian,
+                                                                     ivar,
+                                                                     jvar,
+                                                                     dof_map,
+                                                                     dof_indices,
+                                                                     neighbor_dof_indices,
+                                                                     Assembly::GlobalDataKey{},
+                                                                     tags);
   if (_displaced_problem)
     _displaced_problem->addJacobianNeighbor(
-        jacobian, ivar, jvar, dof_map, dof_indices, neighbor_dof_indices, tid);
+        jacobian, ivar, jvar, dof_map, dof_indices, neighbor_dof_indices, tags, tid);
 }
 
 void
@@ -2135,14 +2117,13 @@ FEProblemBase::reinitNeighbor(const Elem * elem, unsigned int side, THREAD_ID ti
   {
     // There are cases like for cohesive zone modeling without significant sliding where we cannot
     // use FEInterface::inverse_map in Assembly::reinitElemAndNeighbor in the displaced problem
-    // because the physical points coming from the element don't actually lie on the neighbor. In
-    // that case we instead pass over the reference points from the undisplaced calculation
-    const std::vector<Point> * displaced_ref_pts = nullptr;
-    if (_displaced_neighbor_ref_pts == "use_undisplaced_ref")
-      displaced_ref_pts = &_assembly[tid][0]->qRuleNeighbor()->get_points();
+    // because the physical points coming from the element don't actually lie on the neighbor.
+    // Moreover, what's the point of doing another physical point inversion in other cases? We only
+    // care about the reference points which we can just take from the undisplaced computation
+    const auto & displaced_ref_pts = _assembly[tid][0]->qRuleNeighbor()->get_points();
 
     _displaced_problem->reinitNeighbor(
-        _displaced_mesh->elemPtr(elem->id()), side, tid, displaced_ref_pts);
+        _displaced_mesh->elemPtr(elem->id()), side, tid, &displaced_ref_pts);
   }
 }
 
@@ -2921,7 +2902,6 @@ FEProblemBase::addDGKernel(const std::string & dg_kernel_name,
                            const std::string & name,
                            InputParameters & parameters)
 {
-  bool use_undisplaced_reference_points = parameters.get<bool>("_use_undisplaced_reference_points");
   const auto nl_sys_num =
       determineNonlinearSystem(parameters.varName("variable", name), true).second;
 
@@ -2930,31 +2910,6 @@ FEProblemBase::addDGKernel(const std::string & dg_kernel_name,
     parameters.set<SubProblem *>("_subproblem") = _displaced_problem.get();
     parameters.set<SystemBase *>("_sys") = &_displaced_problem->nlSys(nl_sys_num);
     _reinit_displaced_neighbor = true;
-
-    if (use_undisplaced_reference_points)
-    {
-      if (_displaced_neighbor_ref_pts == "invert_elem_phys")
-        mooseError(
-            "Cannot use elem-neighbor objects which rely on 1) undisplaced reference points and 2) "
-            "inversion of primary elem physical points in the same simulation");
-      else if (_displaced_neighbor_ref_pts == "unset")
-        _displaced_neighbor_ref_pts = "use_undisplaced_ref";
-      else if (_displaced_neighbor_ref_pts != "use_undisplaced_ref")
-        mooseError("_displaced_neighbor_ref_pts has an invalid state ",
-                   std::string(_displaced_neighbor_ref_pts));
-    }
-    else
-    {
-      if (_displaced_neighbor_ref_pts == "use_undisplaced_ref")
-        mooseError(
-            "Cannot use elem-neighbor objects which rely on 1) undisplaced reference points and 2) "
-            "inversion of primary elem physical points in the same simulation");
-      else if (_displaced_neighbor_ref_pts == "unset")
-        _displaced_neighbor_ref_pts = "invert_elem_phys";
-      else if (_displaced_neighbor_ref_pts != "invert_elem_phys")
-        mooseError("_displaced_neighbor_ref_pts has an invalid state ",
-                   std::string(_displaced_neighbor_ref_pts));
-    }
   }
   else
   {
@@ -3008,7 +2963,6 @@ FEProblemBase::addInterfaceKernel(const std::string & interface_kernel_name,
                                   const std::string & name,
                                   InputParameters & parameters)
 {
-  bool use_undisplaced_reference_points = parameters.get<bool>("_use_undisplaced_reference_points");
   const auto nl_sys_num =
       determineNonlinearSystem(parameters.varName("variable", name), true).second;
 
@@ -3017,31 +2971,6 @@ FEProblemBase::addInterfaceKernel(const std::string & interface_kernel_name,
     parameters.set<SubProblem *>("_subproblem") = _displaced_problem.get();
     parameters.set<SystemBase *>("_sys") = &_displaced_problem->nlSys(nl_sys_num);
     _reinit_displaced_neighbor = true;
-
-    if (use_undisplaced_reference_points)
-    {
-      if (_displaced_neighbor_ref_pts == "invert_elem_phys")
-        mooseError(
-            "Cannot use elem-neighbor objects which rely on 1) undisplaced reference points and 2) "
-            "inversion of primary elem physical points in the same simulation");
-      else if (_displaced_neighbor_ref_pts == "unset")
-        _displaced_neighbor_ref_pts = "use_undisplaced_ref";
-      else if (_displaced_neighbor_ref_pts != "use_undisplaced_ref")
-        mooseError("_displaced_neighbor_ref_pts has an invalid state ",
-                   std::string(_displaced_neighbor_ref_pts));
-    }
-    else
-    {
-      if (_displaced_neighbor_ref_pts == "use_undisplaced_ref")
-        mooseError(
-            "Cannot use elem-neighbor objects which rely on 1) undisplaced reference points and 2) "
-            "inversion of primary elem physical points in the same simulation");
-      else if (_displaced_neighbor_ref_pts == "unset")
-        _displaced_neighbor_ref_pts = "invert_elem_phys";
-      else if (_displaced_neighbor_ref_pts != "invert_elem_phys")
-        mooseError("_displaced_neighbor_ref_pts has an invalid state ",
-                   std::string(_displaced_neighbor_ref_pts));
-    }
   }
   else
   {
@@ -3751,6 +3680,21 @@ FEProblemBase::getUserObjectBase(const std::string & name, const THREAD_ID tid /
   return *(objs[0]);
 }
 
+const Positions &
+FEProblemBase::getPositionsObject(const std::string & name) const
+{
+  std::vector<Positions *> objs;
+  theWarehouse()
+      .query()
+      .condition<AttribSystem>("UserObject")
+      .condition<AttribName>(name)
+      .queryInto(objs);
+  if (objs.empty())
+    mooseError("Unable to find Positions object with name '" + name + "'");
+  mooseAssert(objs.size() == 1, "Should only find one Positions");
+  return *(objs[0]);
+}
+
 bool
 FEProblemBase::hasUserObject(const std::string & name) const
 {
@@ -4289,7 +4233,7 @@ FEProblemBase::computeUserObjectsInternal(const ExecFlagType & type,
         obj->initialize();
       if (!mortar.empty())
       {
-        auto create_and_run_mortar_functors = [this, &mortar](const bool displaced)
+        auto create_and_run_mortar_functors = [this, type, &mortar](const bool displaced)
         {
           // go over mortar interfaces and construct functors
           const auto & mortar_interfaces = getMortarInterfaces(displaced);
@@ -4312,7 +4256,37 @@ FEProblemBase::computeUserObjectsInternal(const ExecFlagType & type,
                                         *this,
                                         displaced,
                                         subproblem->assembly(0, 0));
-            muot();
+
+            auto process_possibly_handleable_exception = [this, type](auto & exception)
+            {
+              // When executing on linear we can turn exceptions into residual domain errors, stop
+              // the solve, and cut the timestep
+              if (type == EXEC_LINEAR)
+                setException(exception.what());
+              else
+                // Otherwise we don't know what to do
+                mooseError(
+                    "We caught an exception during computation of mortar user objects outside of "
+                    "residual evaluation. Unfortunately we don't know how to handle this case, so "
+                    "we will abort.");
+            };
+            try
+            {
+              muot();
+            }
+            catch (MooseException & e)
+            {
+              process_possibly_handleable_exception(e);
+            }
+            catch (libMesh::LogicError & e)
+            {
+              process_possibly_handleable_exception(e);
+            }
+            catch (MetaPhysicL::LogicError & e)
+            {
+              moose::translateMetaPhysicLError(e);
+            }
+            checkExceptionAndStopSolve();
           }
         };
 
@@ -5607,8 +5581,8 @@ FEProblemBase::solve(const unsigned int nl_sys_num)
 
   setCurrentNonlinearSystem(nl_sys_num);
 
-  // This prevents stale dof indices from lingering around and possibly leading to invalid reads and
-  // writes. Dof indices may be made stale through operations like mesh adaptivity
+  // This prevents stale dof indices from lingering around and possibly leading to invalid reads
+  // and writes. Dof indices may be made stale through operations like mesh adaptivity
   clearAllDofIndices();
   if (_displaced_problem)
     _displaced_problem->clearAllDofIndices();
@@ -5873,7 +5847,7 @@ FEProblemBase::addTimeIntegrator(const std::string & type,
   parameters.set<SubProblem *>("_subproblem") = this;
   _aux->addTimeIntegrator(type, name + ":aux", parameters);
   for (auto & nl : _nl)
-    nl->addTimeIntegrator(type, name, parameters);
+    nl->addTimeIntegrator(type, name + ":" + nl->name(), parameters);
   _has_time_integrator = true;
 
   // add vectors to store u_dot, u_dotdot, udot_old, u_dotdot_old and
@@ -5981,6 +5955,8 @@ FEProblemBase::computeResidualAndJacobian(const NumericVector<Number> & soln,
 
     for (const auto & residual_vector_tag : residual_vector_tags)
       _fe_vector_tags.insert(residual_vector_tag._id);
+
+    setCurrentResidualVectorTags(_fe_vector_tags);
   }
 
   // matrix tags
@@ -6128,6 +6104,8 @@ FEProblemBase::computeResidualAndJacobian(const NumericVector<Number> & soln,
       _displaced_problem->setCurrentlyComputingJacobian(false);
       _displaced_problem->setCurrentlyComputingResidualAndJacobian(false);
     }
+
+    clearCurrentResidualVectorTags();
   }
   catch (MooseException & e)
   {
@@ -6246,6 +6224,8 @@ FEProblemBase::computeResidualTags(const std::set<TagID> & tags)
 
   TIME_SECTION("computeResidualTags", 5, "Computing Residual");
 
+  setCurrentResidualVectorTags(tags);
+
   _aux->zeroVariablesForResidual();
 
   unsigned int n_threads = libMesh::n_threads();
@@ -6340,6 +6320,8 @@ FEProblemBase::computeResidualTags(const std::set<TagID> & tags)
 
   // Reset execution flag as after this point we are no longer on LINEAR
   _current_execute_on_flag = EXEC_NONE;
+
+  clearCurrentResidualVectorTags();
 }
 
 void
@@ -7086,8 +7068,8 @@ FEProblemBase::meshChangedHelper(bool intermediate_change)
       Threads::parallel_reduce(range, pmp);
 
       // Concurrent erasure from the shared hash map is not safe while we are reading from it in
-      // ProjectMaterialProperties, so we handle erasure here. Moreover, erasure based on key is not
-      // thread safe in and of itself because it is a read-write operation
+      // ProjectMaterialProperties, so we handle erasure here. Moreover, erasure based on key is
+      // not thread safe in and of itself because it is a read-write operation
       for (const auto & elem : range)
       {
         _material_props.eraseProperty(elem);
@@ -7618,6 +7600,8 @@ FEProblemBase::checkRelativeConvergence(const PetscInt /*it*/,
                                         const Real /*abstol*/,
                                         std::ostringstream & oss)
 {
+  if (_fail_next_nonlinear_convergence_check)
+    return false;
   if (fnorm <= the_residual * rtol)
   {
     oss << "Converged due to function norm " << fnorm << " < relative tolerance (" << rtol << ")\n";

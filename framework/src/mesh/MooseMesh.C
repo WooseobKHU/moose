@@ -236,6 +236,7 @@ MooseMesh::MooseMesh(const MooseMesh & other_mesh)
   : MooseObject(other_mesh._pars),
     Restartable(this, "Mesh"),
     PerfGraphInterface(this, "CopiedMesh"),
+    _built_from_other_mesh(true),
     _parallel_type(other_mesh._parallel_type),
     _use_distributed_mesh(other_mesh._use_distributed_mesh),
     _distribution_overridden(other_mesh._distribution_overridden),
@@ -341,10 +342,12 @@ MooseMesh::freeBndElems()
   _bnd_elem_ids.clear();
 }
 
-void
-MooseMesh::prepare(bool)
+bool
+MooseMesh::prepare(const MeshBase * const mesh_to_clone)
 {
   TIME_SECTION("prepare", 2, "Preparing Mesh", true);
+
+  bool called_prepare_for_use = false;
 
   mooseAssert(_mesh, "The MeshBase has not been constructed");
 
@@ -352,15 +355,22 @@ MooseMesh::prepare(bool)
     // For whatever reason we do not want to allow renumbering here nor ever in the future?
     getMesh().allow_renumbering(false);
 
-  if (!_mesh->is_prepared())
+  if (mesh_to_clone)
+  {
+    mooseAssert(mesh_to_clone->is_prepared(),
+                "The mesh we wish to clone from must already be prepared");
+    _mesh = mesh_to_clone->clone();
+    _moose_mesh_prepared = false;
+  }
+  else if (!_mesh->is_prepared())
   {
     _mesh->prepare_for_use();
-
     _moose_mesh_prepared = false;
+    called_prepare_for_use = true;
   }
 
   if (_moose_mesh_prepared)
-    return;
+    return called_prepare_for_use;
 
   // Collect (local) subdomain IDs
   _mesh_subdomains.clear();
@@ -398,14 +408,17 @@ MooseMesh::prepare(bool)
     _communicator.set_union(_mesh_sideset_ids);
   }
 
-  if (!_coord_system_set)
-    setCoordSystem(_provided_coord_blocks, getParam<MultiMooseEnum>("coord_type"));
-  else if (_pars.isParamSetByUser("coord_type"))
-    mooseError(
-        "Trying to set coordinate system type information based on the user input file, but "
-        "the coordinate system type information has already been set programmatically! "
-        "Either remove your coordinate system type information from the input file, or contact "
-        "your application developer");
+  if (!_built_from_other_mesh)
+  {
+    if (!_coord_system_set)
+      setCoordSystem(_provided_coord_blocks, getParam<MultiMooseEnum>("coord_type"));
+    else if (_pars.isParamSetByUser("coord_type"))
+      mooseError(
+          "Trying to set coordinate system type information based on the user input file, but "
+          "the coordinate system type information has already been set programmatically! "
+          "Either remove your coordinate system type information from the input file, or contact "
+          "your application developer");
+  }
 
   detectOrthogonalDimRanges();
 
@@ -415,6 +428,8 @@ MooseMesh::prepare(bool)
   checkDuplicateSubdomainNames();
 
   _moose_mesh_prepared = true;
+
+  return called_prepare_for_use;
 }
 
 void
@@ -2498,6 +2513,20 @@ MooseMesh::effectiveSpatialDimension() const
 
   // If we get here, we have a 1D mesh on the x-axis.
   return 1;
+}
+
+unsigned int
+MooseMesh::getBlocksMaxDimension(const std::vector<SubdomainName> & blocks) const
+{
+  unsigned short dim = 0;
+  const auto subdomain_ids = getSubdomainIDs(blocks);
+  const std::set<SubdomainID> subdomain_ids_set(subdomain_ids.begin(), subdomain_ids.end());
+  for (const auto & elem : getMesh().active_subdomain_set_elements_ptr_range(subdomain_ids_set))
+    dim = std::max(dim, elem->dim());
+
+  // Get the maximumal globally
+  _communicator.max(dim);
+  return dim;
 }
 
 std::vector<BoundaryID>

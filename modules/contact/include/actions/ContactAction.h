@@ -27,7 +27,8 @@ enum class ContactFormulation
   PENALTY,
   AUGMENTED_LAGRANGE,
   TANGENTIAL_PENALTY,
-  MORTAR
+  MORTAR,
+  MORTAR_PENALTY
 };
 
 /**
@@ -78,7 +79,10 @@ public:
 
 protected:
   /// Primary/Secondary boundary name pairs for mechanical contact
-  const std::vector<std::pair<BoundaryName, BoundaryName>> _boundary_pairs;
+  std::vector<std::pair<BoundaryName, BoundaryName>> _boundary_pairs;
+
+  /// List of all possible boundaries for contact for automatic pairing (optional)
+  std::vector<BoundaryName> _automatic_pairing_boundaries;
 
   /// Contact model type enum
   const ContactModel _model;
@@ -111,4 +115,13 @@ private:
    * Add single contact pressure auxiliary kernel for various contact action objects
    */
   void addContactPressureAuxKernel();
+  /**
+   * Remove repeated contact pairs from _boundary_pairs.
+   */
+  void removeRepeatedPairs();
+  /**
+   * Create contact pairs between all boundaries whose centroids are within a user-specified
+   * distance of each other.
+   */
+  void createSidesetPairsFromGeometry();
 };

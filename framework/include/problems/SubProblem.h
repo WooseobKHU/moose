@@ -133,6 +133,7 @@ public:
    * Get a VectorTag from a TagID.
    */
   virtual const VectorTag & getVectorTag(const TagID tag_id) const;
+  std::vector<VectorTag> getVectorTags(const std::set<TagID> & tag_ids) const;
 
   /**
    * Get a TagID from a TagName.
@@ -342,27 +343,18 @@ public:
   virtual void addJacobianNeighbor(THREAD_ID tid) = 0;
   virtual void addJacobianNeighborLowerD(THREAD_ID tid) = 0;
   virtual void addJacobianLowerD(THREAD_ID tid) = 0;
-  virtual void addJacobianBlock(SparseMatrix<Number> & jacobian,
-                                unsigned int ivar,
-                                unsigned int jvar,
-                                const DofMap & dof_map,
-                                std::vector<dof_id_type> & dof_indices,
-                                THREAD_ID tid) = 0;
   virtual void addJacobianNeighbor(SparseMatrix<Number> & jacobian,
                                    unsigned int ivar,
                                    unsigned int jvar,
                                    const DofMap & dof_map,
                                    std::vector<dof_id_type> & dof_indices,
                                    std::vector<dof_id_type> & neighbor_dof_indices,
+                                   const std::set<TagID> & tags,
                                    THREAD_ID tid) = 0;
 
   virtual void cacheJacobian(THREAD_ID tid) = 0;
   virtual void cacheJacobianNeighbor(THREAD_ID tid) = 0;
   virtual void addCachedJacobian(THREAD_ID tid) = 0;
-  /**
-   * Deprecated method. Use addCachedJacobian
-   */
-  virtual void addCachedJacobianContributions(THREAD_ID tid) = 0;
 
   virtual void prepare(const Elem * elem, THREAD_ID tid) = 0;
   virtual void prepareFace(const Elem * elem, THREAD_ID tid) = 0;
@@ -880,6 +872,11 @@ public:
   void registerUnfilledFunctorRequest(T * functor_interface,
                                       const std::string & functor_name,
                                       THREAD_ID tid);
+
+  /**
+   * Return the residual vector tags we are currently computing
+   */
+  virtual const std::vector<VectorTag> & currentResidualVectorTags() const = 0;
 
 protected:
   /**

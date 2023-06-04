@@ -51,6 +51,7 @@
 #include "NullExecutor.h"
 #include "ExecFlagRegistry.h"
 #include "SolutionInvalidity.h"
+#include "MooseServer.h"
 
 // Regular expression includes
 #include "pcrecpp.h"
@@ -128,6 +129,13 @@ MooseApp::validParams()
       "--minimal",
       false,
       "Ignore input file and build a minimal application with Transient executioner.");
+
+#ifdef WASP_ENABLED
+  params.addCommandLineParam<bool>(
+      "language_server",
+      "--language-server",
+      "Starts a process to communicate with development tools using the language server protocol");
+#endif
 
   params.addCommandLineParam<std::string>(
       "definition", "--definition", "Shows a SON style input definition dump for input validation");
@@ -327,6 +335,7 @@ MooseApp::validParams()
   params.addPrivateParam<unsigned int>("_multiapp_number");
   params.addPrivateParam<const MooseMesh *>("_master_mesh");
   params.addPrivateParam<const MooseMesh *>("_master_displaced_mesh");
+  params.addPrivateParam<std::string>("_input_text", ""); // input string passed by language server
 
   params.addParam<bool>(
       "use_legacy_material_output",
@@ -394,6 +403,7 @@ MooseApp::MooseApp(InputParameters parameters)
                                : nullptr),
     _mesh_generator_system(*this),
     _execute_flags(moose::internal::ExecFlagRegistry::getExecFlagRegistry().getFlags()),
+    _output_buffer_cache(nullptr),
     _automatic_automatic_scaling(getParam<bool>("automatic_automatic_scaling"))
 {
   // Set the TIMPI sync type via --timpi-sync
@@ -482,6 +492,10 @@ MooseApp::MooseApp(InputParameters parameters)
   if (std::getenv("MOOSE_PROFILE_BASE") || std::getenv("MOOSE_HEAP_BASE"))
     mooseError("gperftool is not available for CPU or heap profiling");
 #endif
+
+  // If this will be a language server then turn off output until that starts
+  if (isParamValid("language_server"))
+    _output_buffer_cache = Moose::out.rdbuf(nullptr);
 
   Registry::addKnownLabel(_type);
   Moose::registerAll(_factory, _action_factory, _syntax);
@@ -944,6 +958,10 @@ MooseApp::setupOptions()
     if (_input_filenames.empty())
       _input_filenames = getParam<std::vector<std::string>>("input_file");
 
+    // Reset output to the buffer what was cached before it was turned it off
+    if (!Moose::out.rdbuf() && _output_buffer_cache)
+      Moose::out.rdbuf(_output_buffer_cache);
+
     if (isParamValid("recover"))
     {
       // We need to set the flag manually here since the recover parameter is a string type (takes
@@ -967,7 +985,8 @@ MooseApp::setupOptions()
       _restart_recover_suffix = getParam<std::string>("recoversuffix");
     }
 
-    _parser.parse(_input_filenames);
+    // Pass list of input files and optional text string if provided to parser
+    _parser.parse(_input_filenames, getParam<std::string>("_input_text"));
 
     if (isParamValid("mesh_only"))
     {
@@ -1012,6 +1031,27 @@ MooseApp::setupOptions()
       // default file base for multiapps is set by MultiApp
     }
   }
+
+#ifdef WASP_ENABLED
+  else if (isParamValid("language_server"))
+  {
+    _perf_graph.disableLivePrint();
+
+    Moose::perf_log.disable_logging();
+
+    // Reset output to the buffer what was cached before it was turned it off
+    if (!Moose::out.rdbuf() && _output_buffer_cache)
+      Moose::out.rdbuf(_output_buffer_cache);
+
+    // Start a language server that communicates using an iostream connection
+    MooseServer moose_server(*this);
+
+    moose_server.run();
+
+    _ready_to_exit = true;
+  }
+#endif
+
   else /* The catch-all case for bad options or missing options, etc. */
   {
     Moose::perf_log.disable_logging();
@@ -1466,7 +1506,7 @@ MooseApp::showInputs() const
 std::string
 MooseApp::getInstallableInputs() const
 {
-  return "";
+  return "tests";
 }
 
 bool
@@ -1745,7 +1785,8 @@ MooseApp::getRestartableMetaData(const std::string & name,
 void
 MooseApp::dynamicAppRegistration(const std::string & app_name,
                                  std::string library_path,
-                                 const std::string & library_name)
+                                 const std::string & library_name,
+                                 bool lib_load_deps)
 {
 #ifdef LIBMESH_HAVE_DLOPEN
   Parameters params;
@@ -1754,6 +1795,7 @@ MooseApp::dynamicAppRegistration(const std::string & app_name,
   params.set<std::string>("registration_method") = app_name + "__registerApps";
   params.set<std::string>("library_path") = library_path;
   params.set<std::string>("library_name") = library_name;
+  params.set<bool>("library_load_dependencies") = lib_load_deps;
 
   dynamicRegistration(params);
 
@@ -1761,7 +1803,7 @@ MooseApp::dynamicAppRegistration(const std::string & app_name,
   if (!AppFactory::instance().isRegistered(app_name))
   {
     std::ostringstream oss;
-    std::set<std::string> paths = getLoadedLibraryPaths();
+    std::set<std::string> paths = getLibrarySearchPaths(library_path);
 
     oss << "Unable to locate library for \"" << app_name
         << "\".\nWe attempted to locate the library \"" << appNameToLibName(app_name)
@@ -1798,6 +1840,7 @@ MooseApp::dynamicAllRegistration(const std::string & app_name,
   params.set<Factory *>("factory") = factory;
   params.set<Syntax *>("syntax") = syntax;
   params.set<ActionFactory *>("action_factory") = action_factory;
+  params.set<bool>("library_load_dependencies") = false;
 
   dynamicRegistration(params);
 #else
@@ -1815,30 +1858,13 @@ MooseApp::dynamicRegistration(const Parameters & params)
   else
     library_name = params.get<std::string>("library_name");
 
-  // Create a vector of paths that we can search inside for libraries
-  std::vector<std::string> paths;
-
-  std::string library_path = params.get<std::string>("library_path");
-
-  if (library_path != "")
-    MooseUtils::tokenize(library_path, paths, 1, ":");
-
-  char * moose_lib_path_env = std::getenv("MOOSE_LIBRARY_PATH");
-  if (moose_lib_path_env)
-  {
-    std::string moose_lib_path(moose_lib_path_env);
-    std::vector<std::string> tmp_paths;
-
-    MooseUtils::tokenize(moose_lib_path, tmp_paths, 1, ":");
-
-    // merge the two vectors together (all possible search paths)
-    paths.insert(paths.end(), tmp_paths.begin(), tmp_paths.end());
-  }
+  auto paths = getLibrarySearchPaths(params.get<std::string>("library_path"));
 
   // Attempt to dynamically load the library
   for (const auto & path : paths)
     if (MooseUtils::checkFileReadable(path + '/' + library_name, false, false))
-      loadLibraryAndDependencies(path + '/' + library_name, params);
+      loadLibraryAndDependencies(
+          path + '/' + library_name, params, params.get<bool>("library_load_dependencies"));
     else
       mooseWarning("Unable to open library file \"",
                    path + '/' + library_name,
@@ -1847,7 +1873,8 @@ MooseApp::dynamicRegistration(const Parameters & params)
 
 void
 MooseApp::loadLibraryAndDependencies(const std::string & library_filename,
-                                     const Parameters & params)
+                                     const Parameters & params,
+                                     const bool load_dependencies)
 {
   std::string line;
   std::string dl_lib_filename;
@@ -1869,11 +1896,14 @@ MooseApp::loadLibraryAndDependencies(const std::string & library_filename,
 
       if (line.find("dependency_libs=") != std::string::npos)
       {
-        pcrecpp::StringPiece input(line);
-        pcrecpp::StringPiece depend_library;
-        while (re_deps.FindAndConsume(&input, &depend_library))
-          // Recurse here to load dependent libraries in depth-first order
-          loadLibraryAndDependencies(depend_library.as_string(), params);
+        if (load_dependencies)
+        {
+          pcrecpp::StringPiece input(line);
+          pcrecpp::StringPiece depend_library;
+          while (re_deps.FindAndConsume(&input, &depend_library))
+            // Recurse here to load dependent libraries in depth-first order
+            loadLibraryAndDependencies(depend_library.as_string(), params, load_dependencies);
+        }
 
         // There's only one line in the .la file containing the dependency libs so break after
         // finding it
@@ -1887,17 +1917,19 @@ MooseApp::loadLibraryAndDependencies(const std::string & library_filename,
   if (dl_lib_filename.empty())
     return;
 
+  const auto & [dir, file_name] = MooseUtils::splitFileName(library_filename);
+
   // Time to load the library, First see if we've already loaded this particular dynamic library
   //     1) make sure we haven't already loaded this library
   // AND 2) make sure we have a library name (we won't for static linkage)
-  auto dyn_lib_it = _lib_handles.find(library_filename);
+  // Note: Here was are going to assume uniqueness based on the filename alone. This has significant
+  // implications for applications that have "diamond" inheritance of libraries (usually
+  // modules). We will only load one of those libraries, versions be damned.
+  auto dyn_lib_it = _lib_handles.find(file_name);
   if (dyn_lib_it == _lib_handles.end())
   {
-    std::pair<std::string, std::string> lib_name_parts =
-        MooseUtils::splitFileName(library_filename);
-
     // Assemble the actual filename using the base path of the *.la file and the dl_lib_filename
-    std::string dl_lib_full_path = lib_name_parts.first + '/' + dl_lib_filename;
+    const auto dl_lib_full_path = dir + '/' + dl_lib_filename;
 
     MooseUtils::checkFileReadable(dl_lib_full_path, false, /*throw_on_unreadable=*/true);
 
@@ -1916,8 +1948,9 @@ MooseApp::loadLibraryAndDependencies(const std::string & library_filename,
 
     DynamicLibraryInfo lib_info;
     lib_info.library_handle = lib_handle;
+    lib_info.full_path = library_filename;
 
-    auto insert_ret = _lib_handles.insert(std::make_pair(library_filename, lib_info));
+    auto insert_ret = _lib_handles.insert(std::make_pair(file_name, lib_info));
     mooseAssert(insert_ret.second == true, "Error inserting into lib_handles map");
 
     dyn_lib_it = insert_ret.first;
@@ -1980,7 +2013,8 @@ MooseApp::loadLibraryAndDependencies(const std::string & library_filename,
                      dyn_lib_it->first,
                      ".\n",
                      "This doesn't necessarily indicate an error condition unless you believe that "
-                     "the method should exist in that library.\n");
+                     "the method should exist in that library.\n",
+                     dlerror());
 #endif
     }
   }
@@ -1993,6 +2027,32 @@ MooseApp::getLoadedLibraryPaths() const
   std::set<std::string> paths;
   for (const auto & it : _lib_handles)
     paths.insert(it.first);
+
+  return paths;
+}
+
+std::set<std::string>
+MooseApp::getLibrarySearchPaths(const std::string & library_path) const
+{
+  std::set<std::string> paths;
+
+  if (!library_path.empty())
+  {
+    std::vector<std::string> tmp_paths;
+    MooseUtils::tokenize(library_path, tmp_paths, 1, ":");
+
+    paths.insert(tmp_paths.begin(), tmp_paths.end());
+  }
+
+  char * moose_lib_path_env = std::getenv("MOOSE_LIBRARY_PATH");
+  if (moose_lib_path_env)
+  {
+    std::string moose_lib_path(moose_lib_path_env);
+    std::vector<std::string> tmp_paths;
+    MooseUtils::tokenize(moose_lib_path, tmp_paths, 1, ":");
+
+    paths.insert(tmp_paths.begin(), tmp_paths.end());
+  }
 
   return paths;
 }

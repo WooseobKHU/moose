@@ -17,6 +17,8 @@ InputParameters
 LMWeightedVelocitiesUserObject::validParams()
 {
   InputParameters params = WeightedVelocitiesUserObject::validParams();
+  params.addClassDescription("Provides the mortar contact Lagrange multipliers (normal and "
+                             "tangential) for constraint enforcement.");
   params.addRequiredCoupledVar(
       "lm_variable_normal",
       "The Lagrange multiplier variable representing the normal contact pressure value.");
@@ -27,6 +29,11 @@ LMWeightedVelocitiesUserObject::validParams()
   params.addCoupledVar("lm_variable_tangential_two",
                        "The Lagrange multiplier variable representing the tangential contact "
                        "pressure along the second tangential direction.");
+  params.addParam<bool>(
+      "use_petrov_galerkin", false, "Whether to use the Petrov-Galerkin approach.");
+  params.addCoupledVar("aux_lm",
+                       "Auxiliary Lagrange multiplier variable that is utilized together with the "
+                       "Petrov-Galerkin approach.");
   return params;
 }
 
@@ -36,11 +43,27 @@ LMWeightedVelocitiesUserObject::LMWeightedVelocitiesUserObject(const InputParame
     _lm_variable_tangential_one(getVar("lm_variable_tangential_one", 0)),
     _lm_variable_tangential_two(isParamValid("lm_variable_tangential_two")
                                     ? getVar("lm_variable_tangential_two", 0)
-                                    : nullptr)
+                                    : nullptr),
+    _use_petrov_galerkin(getParam<bool>("use_petrov_galerkin")),
+    _aux_lm_var(isCoupled("aux_lm") ? getVar("aux_lm", 0) : nullptr)
 {
-  if (!_lm_normal_var || !_lm_variable_tangential_one)
-    paramError("lm_variable_normal", "The Lagrange multiplier variables must be actual variables.");
+  // Check that user inputted a variable
+  auto check_input = [this](const auto var, const auto & var_name)
+  {
+    if (isCoupledConstant(var_name))
+      paramError("lm_variable_normal",
+                 "The Lagrange multiplier variable must be an actual variable and not a constant.");
+    else if (!var)
+      paramError(var_name,
+                 "The Lagrange multiplier variables must be provided and be actual variables.");
+  };
 
+  check_input(_lm_normal_var, "lm_variable_normal");
+  check_input(_lm_variable_tangential_one, "lm_variable_tangential_one");
+  if (_lm_variable_tangential_two)
+    check_input(_lm_variable_tangential_two, "lm_variable_tangential_two");
+
+  // Check that user inputted the right type of variable
   auto check_type = [this](const auto & var, const auto & var_name)
   {
     if (!var.isNodal())
@@ -48,10 +71,21 @@ LMWeightedVelocitiesUserObject::LMWeightedVelocitiesUserObject(const InputParame
                  "The Lagrange multiplier variables must have degrees of freedom exclusively on "
                  "nodes, e.g. they should probably be of finite element type 'Lagrange'.");
   };
+
   check_type(*_lm_normal_var, "lm_variable_normal");
   check_type(*_lm_variable_tangential_one, "lm_variable_tangential_one");
   if (_lm_variable_tangential_two)
     check_type(*_lm_variable_tangential_two, "lm_variable_tangential_two");
+
+  if (_use_petrov_galerkin && ((!isParamValid("aux_lm")) || _aux_lm_var == nullptr))
+    paramError("use_petrov_galerkin",
+               "We need to specify an auxiliary variable `aux_lm` while using the Petrov-Galerkin "
+               "approach");
+
+  if (_use_petrov_galerkin && _aux_lm_var->useDual())
+    paramError("aux_lm",
+               "Auxiliary LM variable needs to use standard shape function, i.e., set `use_dual = "
+               "false`.");
 }
 
 const ADVariableValue &
@@ -75,5 +109,5 @@ LMWeightedVelocitiesUserObject::contactPressure() const
 const VariableTestValue &
 LMWeightedVelocitiesUserObject::test() const
 {
-  return _lm_normal_var->phiLower();
+  return _use_petrov_galerkin ? _aux_lm_var->phiLower() : _lm_normal_var->phiLower();
 }
