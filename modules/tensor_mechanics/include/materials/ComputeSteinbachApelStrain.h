@@ -26,6 +26,8 @@ protected:
 
   const MaterialProperty<Real> & _h_eta;
 
+  std::vector<const MaterialProperty<Real> *> _dh;
+
   std::string _base_A;
   std::string _base_B;
 
