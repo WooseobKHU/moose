@@ -28,7 +28,6 @@ ComputeSteinbachApelStrain::validParams()
 ComputeSteinbachApelStrain::ComputeSteinbachApelStrain(const InputParameters & parameters)
   : DerivativeMaterialInterface<Material>(parameters),
   _h_eta(getMaterialProperty<Real>("h")),
- 
   _base_name(isParamValid("base_name") ? getParam<std::string>("base_name") + "_" : ""),
   _base_A(getParam<std::string>("base_A") + "_"),
   _base_B(getParam<std::string>("base_B") + "_"),
