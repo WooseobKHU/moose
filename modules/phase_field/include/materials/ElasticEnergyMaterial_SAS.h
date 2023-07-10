@@ -16,7 +16,7 @@
 /**
  * Material class to compute the elastic free energy and its derivatives
  */
-class ElasticEnergyMaterial_SAS : public DerivativeFunctionMaterialBase
+class ElasticEnergyMaterialSAS : public DerivativeFunctionMaterialBase
 {
 public:
   static InputParameters validParams();
