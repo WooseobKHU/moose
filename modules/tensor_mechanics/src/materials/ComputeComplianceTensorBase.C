@@ -15,9 +15,6 @@ InputParameters
 ComputeComplianceTensorBaseTempl<is_ad>::validParams()
 {
   InputParameters params = Material::validParams();
-  params.addParam<FunctionName>(
-      "elasticity_tensor_prefactor",
-      "");
   params.addParam<std::string>("base_name",
                                "Optional parameter that allows the user to define ");
   return params;
@@ -27,7 +24,6 @@ template <bool is_ad>
 ComputeComplianceTensorBaseTempl<is_ad>::ComputeComplianceTensorBaseTempl(
     const InputParameters & parameters)
   : DerivativeMaterialInterface<Material>(parameters),
-    GuaranteeProvider(this),
     _base_name(isParamValid("base_name") ? getParam<std::string>("base_name") + "_" : ""),
     _compliance_tensor_name(_base_name + "compliance_tensor"),
     _elasticity_tensor_name(_base_name + "elasticity_tensor"),

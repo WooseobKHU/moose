@@ -12,11 +12,9 @@
 #include "DerivativeMaterialInterface.h"
 #include "Material.h"
 #include "RankFourTensor.h"
-#include "GuaranteeProvider.h"
 
 template <bool is_ad>
-class ComputeComplianceTensorBaseTempl : public DerivativeMaterialInterface<Material>,
-                                         public GuaranteeProvider
+class ComputeComplianceTensorBaseTempl : public DerivativeMaterialInterface<Material>
 {
 public:
   static InputParameters validParams();

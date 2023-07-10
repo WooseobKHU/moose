@@ -21,8 +21,6 @@ public:
   ComputeInverseRotatedElasticityTensorBaseTempl(const InputParameters & parameters);
 
 protected:
-  RealVectorValue _Euler_angles;
-  const RealTensorValue _rotation_matrix;
 };
 
 typedef ComputeInverseRotatedElasticityTensorBaseTempl<false> ComputeInverseRotatedElasticityTensorBase;
